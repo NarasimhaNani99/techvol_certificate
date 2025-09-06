@@ -4,9 +4,13 @@ import os
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
+from datetime import datetime, timedelta
 
-# Load CSV
+# Load and clean CSV
 df = pd.read_csv("data.csv")
+
+# Strip all leading/trailing spaces from string columns
+df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
 
 # Fonts
 font_regular = ImageFont.truetype("arial.ttf", 48)
@@ -24,11 +28,15 @@ def draw_paragraph(draw, segments, x_margin, y_start, max_width, line_height):
     words = []
     for text, style in segments:
         font = font_bold if style == "bold" else font_regular
-        for w in text.split(" "):
-            words.append((w + " ", font))
+        # Strip space from ends of text segment
+        text = text.strip()
+        for w in text.split():
+            words.append((w, font))
 
-    for word, font in words:
-        word_width = draw.textlength(word, font=font)
+    for i, (word, font) in enumerate(words):
+        # Add space only between words
+        word_with_space = word + " "
+        word_width = draw.textlength(word_with_space, font=font)
 
         if x + word_width > max_width:  # wrap
             x_cursor = x_margin
@@ -39,10 +47,11 @@ def draw_paragraph(draw, segments, x_margin, y_start, max_width, line_height):
             x = x_margin
             line = []
 
-        line.append((word, font))
+        line.append((word_with_space, font))
         x += word_width
 
-    if line:  # last line
+    # Draw last line
+    if line:
         x_cursor = x_margin
         for part, f in line:
             draw.text((x_cursor, y), part, font=f, fill="#000000")
@@ -50,7 +59,7 @@ def draw_paragraph(draw, segments, x_margin, y_start, max_width, line_height):
 
     return y + line_height
 
-
+# Loop through each record
 for _, row in df.iterrows():
     img = Image.open("template.png").convert("RGB")
     width, height = img.size
@@ -58,47 +67,49 @@ for _, row in df.iterrows():
 
     cert_id = str(row["certificate_id"])
     name = row["name"]
-    gender = row["gender"].strip().lower()
+    gender = row["gender"].lower()
     start_date = row["training_start_date"]
     end_date = row["training_end_date"]
     college = str(row["college"]) if "college" in row and pd.notna(row["college"]) else ""
+    course = row["course"]
 
+    # Convert date
+    date_obj = datetime.strptime(end_date, "%d-%m-%Y")
+    issued_on = (date_obj + timedelta(days=1)).strftime("%d %B %Y")
+
+    # Pronouns and titles
     title = "Mr." if gender == "male" else "Miss."
     he_she = "he" if gender == "male" else "she"
     him_her = "him" if gender == "male" else "her"
     his_her = "his" if gender == "male" else "her"
 
-    # --- Issued date as static variable ---
-    issued_on = "03 July 2024"
-
     company = "Techvol Technologies Bharat Pvt. Ltd."
-    course = "Python"
 
-    # 🔹 Build first paragraph dynamically
-    first_para = [("This is to certify that ", "regular"),
+    # 🔹 Build paragraph 1 dynamically
+    first_para = [("This is to certify that", "regular"),
                   (f"{title} {name}", "bold")]
-    if college.strip():
-        first_para += [(", a student of ", "regular"),
+    if college:
+        first_para += [("a student of", "regular"),
                        (college, "bold")]
-    first_para += [(", has successfully completed an internship at ", "regular"),
+    first_para += [("has successfully completed an internship at", "regular"),
                    (company, "bold"),
-                   (" from ", "regular"),
+                   ("from", "regular"),
                    (f"{start_date} to {end_date}", "bold"),
                    (".", "regular")]
 
-    # Paragraphs
+    # 🔹 Paragraphs
     main_paragraphs = [
         first_para,
-        [("During this period, ", "regular"),
+        [("During this period,", "regular"),
          (he_she, "regular"),
-         (" has worked in ", "regular"),
+         ("has worked in", "regular"),
          (course, "bold"),
-         (" and actively participated in various projects and tasks, demonstrating excellent performance and dedication.", "regular")],
-        [("We wish ", "regular"),
+         ("and actively participated in various projects and tasks, demonstrating excellent performance and dedication.", "regular")],
+        [("We wish", "regular"),
          (him_her, "regular"),
-         (" all the best for ", "regular"),
+         ("all the best for", "regular"),
          (his_her, "regular"),
-         (" future endeavours.", "regular")],
+         ("future endeavours.", "regular")],
     ]
 
     # Layout
@@ -107,14 +118,13 @@ for _, row in df.iterrows():
     x_margin = 180
     max_width = width - 180
 
-    # 🔹 Start higher
+    # Starting Y coordinate
     y_start = (height // 2) - 730
     y_text = y_start
 
-    # Draw main paragraphs (part-1)
+    # Draw paragraphs
     for i, para in enumerate(main_paragraphs):
         y_text = draw_paragraph(draw, para, x_margin, y_text, max_width, line_height)
-        # Add spacing only between paragraphs, not after last paragraph
         if i < len(main_paragraphs) - 1:
             y_text += para_spacing
 
@@ -123,19 +133,17 @@ for _, row in df.iterrows():
     pdf_path = f"output/{cert_id}.pdf"
     img.save(png_path)
 
-    # --- Add Verify Block + Footer via ReportLab immediately after part-1 ---
+    # Generate PDF using ReportLab
     link = "https://validate.techvol.in"
     c = canvas.Canvas(pdf_path, pagesize=A4)
-
-    # Set PDF title as the certificate holder's name
     c.setTitle(name)
 
     c.drawImage(ImageReader(png_path), 0, 0, width=A4[0], height=A4[1])
 
-    # Map PNG Y coordinates to PDF coordinates
+    # Map coordinates
     pdf_scale = A4[1] / height
     pdf_x_margin = 45
-    verify_y = (height - y_text) * pdf_scale - 30  # small gap after part-1
+    verify_y = (height - y_text) * pdf_scale - 30
     link_y = verify_y - 22
     footer_y = link_y - 40
 
@@ -144,18 +152,19 @@ for _, row in df.iterrows():
     c.setFillColorRGB(0, 0, 0)
     c.drawString(pdf_x_margin, verify_y, "You can verify the certificate on portal using below link")
 
-    # Link (clickable)
+    # Clickable link
     c.setFont("Helvetica-Bold", 13)
     c.setFillColorRGB(0, 0, 1)
     c.drawString(pdf_x_margin, link_y, link)
     c.linkURL(link, (pdf_x_margin, link_y, pdf_x_margin + 400, link_y + 20), relative=0)
 
-    # Certificate ID + Issued Date
+    # Certificate ID + Issue Date
     c.setFont("Helvetica", 13)
     c.setFillColorRGB(0, 0, 0)
     c.drawString(pdf_x_margin, footer_y, f"Certificate ID: {cert_id}")
     c.drawString(pdf_x_margin, footer_y - 22, f"Issued On: {issued_on}")
 
     c.save()
-    # Remove intermediate PNG
-    os.remove(png_path) 
+
+    # Cleanup PNG
+    os.remove(png_path)
